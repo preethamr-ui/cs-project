@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Autonomous Quadrotor Simulation (2D & 3D)</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+    body {
+      background: #080c14;
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+    }
+    #canvas-container {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1;
+    }
+
+    .top-bar {
+      position: absolute;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(11, 18, 32, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 30px;
+      padding: 8px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      z-index: 10;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    .status-text {
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 13px;
+      font-weight: 700;
+      color: #38bdf8;
+    }
+
+    .bottom-bar {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(11, 18, 32, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: 30px;
+      padding: 8px 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      z-index: 10;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    .btn {
+      background: rgba(30, 41, 59, 0.85);
+      color: #f8fafc;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.2s;
+    }
+    .btn:hover {
+      background: rgba(56, 189, 248, 0.25);
+      border-color: #38bdf8;
+      color: #38bdf8;
+    }
+    .btn.active {
+      background: linear-gradient(135deg, #0284c7, #0369a1);
+      border-color: #38bdf8;
+      color: white;
+    }
+    input[type="range"] {
+      width: 180px;
+      -webkit-appearance: none;
+      height: 5px;
+      background: rgba(148, 163, 184, 0.3);
+      border-radius: 3px;
+      outline: none;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #38bdf8;
+      box-shadow: 0 0 8px #38bdf8;
+      cursor: pointer;
+    }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+  <div id="canvas-container"></div>
+
+  <!-- Minimal Top Status -->
+  <div class="top-bar">
+    <span style="font-size: 13px; font-weight: 700; color: #fff;">Autonomous Quadrotor Simulation</span>
+    <span style="color: #64748b;">|</span>
+    <span class="status-text" id="status-display">Time: 0.00s | Altitude: 0.00m</span>
+  </div>
+
+  <!-- Bottom Playback & Mode Controls -->
+  <div class="bottom-bar">
+    <button class="btn" id="btn-play">Pause</button>
+    <button class="btn" id="btn-restart">↺ Restart</button>
+    <input type="range" id="time-slider" min="0" max="15" step="0.02" value="0">
+    <span id="time-label" style="font-family: monospace; font-size: 12px; color: #38bdf8; min-width: 45px;">0.00s</span>
+
+    <div style="display: flex; gap: 6px;">
+      <button class="btn active" id="btn-2d-payload" data-mode="payload">2D Payload</button>
+      <button class="btn" id="btn-2d-wind" data-mode="wind">2D Wind</button>
+      <button class="btn" id="btn-3d" data-mode="3d">3D Orbit</button>
+    </div>
+  </div>
+
+  <script>
+    let simMode = 'payload'; // 'payload', 'wind', '3d'
+
+    function getFlightState(t) {
+      // Clean analytic flight dynamics
+      let z = (t >= 0.5) ? (5.0 * (1 - Math.exp(-2.5 * (t - 0.5)))) : 0;
+      let x = 0;
+      let pitch = 0;
+      let wind = 0;
+      let payload = 0;
+
+      if (simMode === 'payload') {
+        // Payload disturbance only: +30kg at t=5s (Total 40kg)
+        if (t >= 5.0) {
+          z = 5.0 - 0.18 * Math.exp(-2.2 * (t - 5.0)) * Math.sin(3.5 * (t - 5.0));
+          payload = 30;
+        }
+      } else if (simMode === 'wind') {
+        // Wind disturbance only: 16m/s gust at t=2 to 7s (~58 km/h)
+        if (t >= 2.0 && t <= 7.0) {
+          wind = 16.0 * Math.pow(Math.sin(Math.PI * (t - 2.0) / 5.0), 2);
+          pitch = -(wind * 0.88); // tilts nose-down (-14 deg) into wind
+          x = 0.03 * Math.sin(3 * t); // held tightly near 0
+        }
+      } else {
+        // 3D combined mode
+        if (t >= 2.0 && t <= 7.0) {
+          wind = 16.0 * Math.pow(Math.sin(Math.PI * (t - 2.0) / 5.0), 2);
+          pitch = -(wind * 0.88);
+          x = 0.03 * Math.sin(3 * t);
+        }
+        if (t >= 5.0) {
+          z = 5.0 - 0.18 * Math.exp(-2.2 * (t - 5.0)) * Math.sin(3.5 * (t - 5.0));
+          payload = 30;
+        }
+      }
+      return { x, z, pitch, wind, payload };
+    }
+
+    // --- THREE.JS 3D SCENE ---
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x080c14);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 5.0, 7.5); // Center on Z = 5.0m!
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    container.appendChild(renderer.domElement);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.target.set(0, 5.0, 0); // Locked on drone altitude!
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(4, 12, 6);
+    scene.add(dirLight);
+
+    // Ground Grid & Helipad
+    const grid = new THREE.GridHelper(16, 32, 0x06b6d4, 0x1e293b);
+    scene.add(grid);
+
+    const pad = new THREE.Mesh(
+      new THREE.CircleGeometry(1.8, 36),
+      new THREE.MeshStandardMaterial({ color: 0x111827 })
+    );
+    pad.rotation.x = -Math.PI / 2;
+    pad.position.y = 0.005;
+    scene.add(pad);
+
+    // Target Height Ring at Z = 5.0m
+    const targetRing = new THREE.Mesh(
+      new THREE.RingGeometry(1.6, 1.66, 48),
+      new THREE.MeshBasicMaterial({ color: 0x00f0ff, side: THREE.DoubleSide, transparent: true, opacity: 0.4 })
+    );
+    targetRing.rotation.x = -Math.PI / 2;
+    targetRing.position.y = 5.0;
+    scene.add(targetRing);
+
+    // Wind Particles
+    const windCount = 120;
+    const windGeo = new THREE.BufferGeometry();
+    const windPos = new Float32Array(windCount * 3);
+    for (let i = 0; i < windCount; i++) {
+      windPos[i * 3]     = (Math.random() - 0.5) * 8.0;
+      windPos[i * 3 + 1] = 4.0 + (Math.random() - 0.5) * 3.0;
+      windPos[i * 3 + 2] = (Math.random() - 0.5) * 4.0;
+    }
+    windGeo.setAttribute('position', new THREE.BufferAttribute(windPos, 3));
+    const windMat = new THREE.PointsMaterial({ color: 0x38bdf8, size: 0.08, transparent: true, opacity: 0.0 });
+    const windParticles = new THREE.Points(windGeo, windMat);
+    scene.add(windParticles);
+
+    // Drone Model
+    const droneGroup = new THREE.Group();
+    scene.add(droneGroup);
+
+    const tiltGroup = new THREE.Group();
+    droneGroup.add(tiltGroup);
+
+    const bodyMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.18, 0.22, 0.08, 6),
+      new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.8, roughness: 0.3 })
+    );
+    tiltGroup.add(bodyMesh);
+
+    const domeMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.09, 16, 16, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.MeshStandardMaterial({ color: 0x06b6d4 })
+    );
+    domeMesh.position.y = 0.04;
+    tiltGroup.add(domeMesh);
+
+    const noseMesh = new THREE.Mesh(
+      new THREE.ConeGeometry(0.04, 0.14, 12),
+      new THREE.MeshStandardMaterial({ color: 0xef4444 })
+    );
+    noseMesh.rotation.z = -Math.PI / 2;
+    noseMesh.position.set(0.24, 0.01, 0);
+    tiltGroup.add(noseMesh);
+
+    const armLength = 0.44;
+    const armMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.7 });
+    const armGeo = new THREE.CylinderGeometry(0.014, 0.014, armLength * 2, 12);
+    const arm1 = new THREE.Mesh(armGeo, armMat); arm1.rotation.z = Math.PI / 4; tiltGroup.add(arm1);
+    const arm2 = new THREE.Mesh(armGeo, armMat); arm2.rotation.z = -Math.PI / 4; tiltGroup.add(arm2);
+
+    const rotorBlades = [];
+    const armAngles = [Math.PI / 4, 3 * Math.PI / 4, 5 * Math.PI / 4, 7 * Math.PI / 4];
+    for (let i = 0; i < 4; i++) {
+      const mx = armLength * Math.cos(armAngles[i]);
+      const my = armLength * Math.sin(armAngles[i]);
+      const propGroup = new THREE.Group();
+      propGroup.position.set(mx, my + 0.03, 0);
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.005, 0.03), new THREE.MeshStandardMaterial({ color: 0x0f172a }));
+      propGroup.add(blade);
+      const disk = new THREE.Mesh(new THREE.CircleGeometry(0.20, 24), new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.35, side: THREE.DoubleSide }));
+      propGroup.add(disk);
+      tiltGroup.add(propGroup);
+      rotorBlades.push(propGroup);
+    }
+
+    // Slung Payload
+    const payloadGroup = new THREE.Group();
+    droneGroup.add(payloadGroup);
+    const cableMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, 0.5, 8), new THREE.MeshBasicMaterial({ color: 0xfacc15 }));
+    cableMesh.position.y = -0.25;
+    payloadGroup.add(cableMesh);
+    const cargoMesh = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 0.24), new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.6 }));
+    cargoMesh.position.y = -0.57;
+    payloadGroup.add(cargoMesh);
+    payloadGroup.visible = false;
+
+    // Ground Shadow
+    const shadowMesh = new THREE.Mesh(new THREE.CircleGeometry(0.35, 32), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4 }));
+    shadowMesh.rotation.x = -Math.PI / 2;
+    shadowMesh.position.y = 0.01;
+    scene.add(shadowMesh);
+
+    // Trail
+    const maxTrail = 300;
+    const trailPos = new Float32Array(maxTrail * 3);
+    const trailGeo = new THREE.BufferGeometry();
+    trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+    const trailLine = new THREE.Line(trailGeo, new THREE.LineBasicMaterial({ color: 0x10b981 }));
+    scene.add(trailLine);
+
+    // --- CONTROLS & SEPARATE MODES ---
+    let simTime = 0.0;
+    let isPlaying = true;
+    const btnPlay = document.getElementById('btn-play');
+    const btnRestart = document.getElementById('btn-restart');
+    const slider = document.getElementById('time-slider');
+    const timeLabel = document.getElementById('time-label');
+    const statusDisplay = document.getElementById('status-display');
+
+    const btnPayload = document.getElementById('btn-2d-payload');
+    const btnWind = document.getElementById('btn-2d-wind');
+    const btn3D = document.getElementById('btn-3d');
+
+    btnPlay.addEventListener('click', () => {
+      isPlaying = !isPlaying;
+      btnPlay.textContent = isPlaying ? 'Pause' : 'Play';
+    });
+    btnRestart.addEventListener('click', () => { simTime = 0; slider.value = 0; });
+    slider.addEventListener('input', (e) => { simTime = parseFloat(e.target.value); });
+
+    function setMode(mode) {
+      simMode = mode;
+      [btnPayload, btnWind, btn3D].forEach(b => b.classList.remove('active'));
+      if (mode === 'payload') {
+        btnPayload.classList.add('active');
+        camera.position.set(0, 5.0, 7.5);
+        controls.target.set(0, 5.0, 0);
+      } else if (mode === 'wind') {
+        btnWind.classList.add('active');
+        camera.position.set(0, 5.0, 7.5);
+        controls.target.set(0, 5.0, 0);
+      } else {
+        btn3D.classList.add('active');
+        camera.position.set(4.8, 6.2, 5.8);
+        controls.target.set(0, 5.0, 0);
+      }
+    }
+
+    btnPayload.addEventListener('click', () => setMode('payload'));
+    btnWind.addEventListener('click', () => setMode('wind'));
+    btn3D.addEventListener('click', () => setMode('3d'));
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    let lastTime = performance.now();
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = (now - lastTime) / 1000.0;
+      lastTime = now;
+
+      if (isPlaying) {
+        simTime += dt;
+        if (simTime > 15.0) { simTime = 15.0; isPlaying = false; btnPlay.textContent = 'Play'; }
+        slider.value = simTime;
+      }
+      timeLabel.textContent = simTime.toFixed(2) + 's';
+
+      const s = getFlightState(simTime);
+
+      droneGroup.position.set(s.x, s.z, 0);
+      shadowMesh.position.set(s.x, 0.01, 0);
+      tiltGroup.rotation.z = -THREE.MathUtils.degToRad(s.pitch);
+
+      for (let i = 0; i < 4; i++) {
+        rotorBlades[i].rotation.z += 0.6 * (i % 2 === 0 ? 1 : -1);
+      }
+
+      payloadGroup.visible = (s.payload > 0);
+
+      const windOn = (s.wind > 0.4);
+      windMat.opacity = Math.min(0.65, (s.wind / 10.0) * 0.65);
+      if (windOn) {
+        const p = windGeo.attributes.position.array;
+        for (let i = 0; i < windCount; i++) {
+          p[i * 3] += (s.wind * 0.4) * dt;
+          if (p[i * 3] > 4.5) p[i * 3] = -4.5;
+        }
+        windGeo.attributes.position.needsUpdate = true;
+      }
+
+      let info = '';
+      if (simMode === 'payload') {
+        info = (s.payload > 0) ? '+30kg Payload Attached (Total: 40kg, Recovered)' : 'Dry UAV Hover (10kg)';
+      } else if (simMode === 'wind') {
+        info = windOn ? `Wind: ${s.wind.toFixed(1)}m/s (~58 km/h) | Nose-Down Pitch: ${s.pitch.toFixed(1)}°` : 'Wind: Calm';
+      } else {
+        info = `Pitch: ${s.pitch.toFixed(1)}° | Wind: ${s.wind.toFixed(1)}m/s | ${s.payload > 0 ? '+30kg Box' : 'No Box'}`;
+      }
+      statusDisplay.textContent = `Mode: ${simMode.toUpperCase()} | Time: ${simTime.toFixed(2)}s | Altitude: ${s.z.toFixed(2)}m | ${info}`;
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
